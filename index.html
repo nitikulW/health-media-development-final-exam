@@ -54,7 +54,7 @@ body{
 ::selection{background:var(--selection);color:var(--ink)}
 a{color:var(--accent);text-underline-offset:4px}
 button,input,select{font:inherit;accent-color:var(--accent)}
-button{
+button,select{
   cursor:pointer;
   background:var(--paper);
   color:var(--ink);
@@ -63,8 +63,8 @@ button{
   border-radius:7px;
   line-height:1.5;
 }
-button:hover{background:var(--ground);color:var(--ink)}
-button:focus-visible,a:focus-visible,input:focus-visible,summary:focus-visible{
+button:hover,select:hover{background:var(--ground);color:var(--ink)}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{
   outline:3px solid var(--focus);
   outline-offset:3px;
 }
@@ -185,6 +185,31 @@ main{
   font-size:15px;
 }
 .toolbar a:hover{border-color:var(--accent)}
+.audio-bar{
+  max-width:78ch;
+  margin:0 auto 20px;
+  padding:14px 18px;
+  border-radius:9px;
+  background:var(--card);
+  border:2px solid var(--accent);
+  display:grid;
+  gap:10px;
+}
+.audio-controls{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  align-items:center;
+}
+.audio-status{
+  font-size:14px;
+  color:var(--muted);
+}
+.tts-active-chunk{
+  outline:2px solid var(--accent);
+  background:var(--selected);
+  border-radius:6px;
+}
 .star-legend{
   font-size:14px;
   background:var(--star-bg);
@@ -447,7 +472,7 @@ label.opt:has(input:checked){
     --selected:#e5eee4;
     --on-accent:#fff;
   }
-  header,aside,.toolbar,.quiztools,.filter-bar,.save{display:none!important}
+  header,aside,.toolbar,.audio-bar,.quiztools,.filter-bar,.save{display:none!important}
   main{border:0;padding:0}
   .layout{display:block}
   .question{break-inside:avoid}
@@ -495,6 +520,25 @@ label.opt:has(input:checked){
       <span class="star-badge">⭐⭐⭐ ออกสอบเน้นย้ำ</span> ประเด็นหลักตามโครงสร้างใบปะหน้าข้อสอบ / ตารางเปรียบเทียบ / ขั้นตอนปฏิบัติการสำคัญในสไลด์
       <span class="star-badge">⭐⭐ มีโอกาสออกสูง</span> รายละเอียดการตั้งค่าเมนู พารามิเตอร์ และการประยุกต์ใช้งาน
       <span class="star-badge">⭐ เก็บตกครบเนื้อหา</span> รายละเอียดเสริมและแหล่งข้อมูลอ้างอิงในสไลด์
+    </div>
+
+    <div class="audio-bar" id="audioBar" aria-label="เครื่องเล่นเสียงอ่านเนื้อหาสรุปครบทุกหัวข้อ">
+      <div><strong>🔊 โหมดฟังเสียงสรุปเนื้อหาครบทุกหัวข้อ (Audio Overview ประจำบท):</strong> อ่านออกเสียงเนื้อหาบนหน้าเว็บนี้เรียงตามลำดับทุกหัวข้อและทุกตารางตั้งแต่ต้นจนจบ</div>
+      <div class="audio-controls">
+        <button type="button" class="primary" id="ttsPlayBtn">▶ เริ่มฟังเสียงเนื้อหาบทนี้</button>
+        <button type="button" id="ttsPrevBtn" disabled>⏮ ย่อหน้าก่อนหน้า</button>
+        <button type="button" id="ttsNextBtn" disabled>⏭ ย่อหน้าถัดไป</button>
+        <button type="button" id="ttsStopBtn" disabled>⏹ หยุด</button>
+        <label for="ttsRate" style="font-size:14px">ความเร็วเสียง:
+          <select id="ttsRate" style="padding:5px 10px">
+            <option value="1">1.0x (ปกติ)</option>
+            <option value="1.15">1.15x (กระชับ)</option>
+            <option value="1.3">1.3x (ติวเร็ว)</option>
+            <option value="1.5">1.5x (เร่งด่วน)</option>
+          </select>
+        </label>
+      </div>
+      <div class="audio-status" id="ttsStatus">พร้อมอ่านออกเสียงเนื้อหาทั้งหมดในบทนี้ (คลิกที่ย่อหน้าใดก็ได้ในเนื้อหาเพื่อเริ่มฟังจากจุดนั้นได้ทันที)</div>
     </div>
 
     <div class="reading-banner" id="readingBanner">
@@ -643,6 +687,128 @@ function renderQuestionCard(q, i, s) {
   </fieldset>`;
 }
 
+/* Built-in Full Content Audio Reader (Web Speech API) */
+let ttsChunks = [];
+let ttsIndex = 0;
+let ttsPlaying = false;
+let ttsPaused = false;
+
+function stopTTS() {
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  ttsPlaying = false;
+  ttsPaused = false;
+  ttsChunks.forEach(el => el.classList.remove('tts-active-chunk'));
+  $('ttsPlayBtn').textContent = '▶ เริ่มฟังเสียงเนื้อหาบทนี้';
+  $('ttsPrevBtn').disabled = true;
+  $('ttsNextBtn').disabled = true;
+  $('ttsStopBtn').disabled = true;
+  $('ttsStatus').textContent = 'พร้อมอ่านออกเสียงเนื้อหาทั้งหมดในบทนี้ (คลิกที่ย่อหน้าใดก็ได้ในเนื้อหาเพื่อเริ่มฟังจากจุดนั้นได้ทันที)';
+}
+
+function buildTTSChunks() {
+  stopTTS();
+  const container = $('summary');
+  if (!container) return;
+  ttsChunks = Array.from(container.querySelectorAll('h1, h2, h3, h4, p, blockquote, tr')).filter(el => el.innerText && el.innerText.trim().length > 1);
+  ttsIndex = 0;
+}
+
+function speakCurrentChunk() {
+  if (!('speechSynthesis' in window)) {
+    $('ttsStatus').textContent = 'เบราว์เซอร์ของคุณไม่รองรับระบบอ่านออกเสียง (Web Speech API)';
+    return;
+  }
+  if (ttsIndex < 0 || ttsIndex >= ttsChunks.length) {
+    stopTTS();
+    $('ttsStatus').textContent = '✓ อ่านจบครบทุกหัวข้อในบทนี้เรียบร้อยแล้ว';
+    return;
+  }
+  window.speechSynthesis.cancel();
+  ttsChunks.forEach(el => el.classList.remove('tts-active-chunk'));
+  const el = ttsChunks[ttsIndex];
+  el.classList.add('tts-active-chunk');
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  const cleanText = el.innerText
+    .replace(/⭐+/g, ' ดาวเน้นข้อสอบ ')
+    .replace(/➔|→/g, ' ไปยัง ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const utter = new SpeechSynthesisUtterance(cleanText);
+  utter.lang = 'th-TH';
+  utter.rate = parseFloat($('ttsRate').value) || 1.0;
+  const voices = window.speechSynthesis.getVoices();
+  const thVoice = voices.find(v => v.lang && v.lang.toLowerCase().startsWith('th'));
+  if (thVoice) utter.voice = thVoice;
+
+  $('ttsPlayBtn').textContent = '⏸ พักเสียงชั่วคราว';
+  $('ttsPrevBtn').disabled = ttsIndex <= 0;
+  $('ttsNextBtn').disabled = ttsIndex >= ttsChunks.length - 1;
+  $('ttsStopBtn').disabled = false;
+  $('ttsStatus').textContent = `กำลังพูดส่วนที่ ${ttsIndex + 1} / ${ttsChunks.length}: "${cleanText.slice(0, 70)}${cleanText.length > 70 ? '...' : ''}"`;
+
+  utter.onend = () => {
+    if (ttsPlaying && !ttsPaused) {
+      ttsIndex += 1;
+      speakCurrentChunk();
+    }
+  };
+  window.speechSynthesis.speak(utter);
+}
+
+$('ttsPlayBtn').onclick = () => {
+  if (!ttsChunks.length) buildTTSChunks();
+  if (!ttsPlaying) {
+    ttsPlaying = true;
+    ttsPaused = false;
+    speakCurrentChunk();
+  } else if (!ttsPaused) {
+    ttsPaused = true;
+    if ('speechSynthesis' in window) window.speechSynthesis.pause();
+    $('ttsPlayBtn').textContent = '▶ ฟังต่อ';
+    $('ttsStatus').textContent = `พักเสียงไว้ที่ส่วนที่ ${ttsIndex + 1} / ${ttsChunks.length}`;
+  } else {
+    ttsPaused = false;
+    if ('speechSynthesis' in window) window.speechSynthesis.resume();
+    $('ttsPlayBtn').textContent = '⏸ พักเสียงชั่วคราว';
+  }
+};
+
+$('ttsPrevBtn').onclick = () => {
+  if (ttsIndex > 0) {
+    ttsIndex -= 1;
+    ttsPlaying = true;
+    ttsPaused = false;
+    speakCurrentChunk();
+  }
+};
+
+$('ttsNextBtn').onclick = () => {
+  if (ttsIndex < ttsChunks.length - 1) {
+    ttsIndex += 1;
+    ttsPlaying = true;
+    ttsPaused = false;
+    speakCurrentChunk();
+  }
+};
+
+$('ttsStopBtn').onclick = stopTTS;
+$('ttsRate').onchange = () => {
+  if (ttsPlaying && !ttsPaused) speakCurrentChunk();
+};
+
+$('summary').addEventListener('click', e => {
+  if (!ttsPlaying) return;
+  const target = e.target.closest('h1, h2, h3, h4, p, blockquote, tr');
+  const idx = ttsChunks.indexOf(target);
+  if (idx !== -1) {
+    ttsIndex = idx;
+    ttsPaused = false;
+    speakCurrentChunk();
+  }
+});
+
 function render() {
   const c = chapter(), s = state();
   $('chapters').innerHTML = DATA.map(x => {
@@ -658,6 +824,8 @@ function render() {
   $('summary').hidden = quizOnlyMode;
   $('summaryLink').hidden = quizOnlyMode;
   $('readingBanner').hidden = quizOnlyMode;
+  $('audioBar').hidden = quizOnlyMode;
+  buildTTSChunks();
 
   $('quizTitle').textContent = c.id === 'exam48'
     ? `แบบจำลองข้อสอบปลายภาคเสมือนจริง 48 ข้อ (ตามใบปะหน้า 48 คะแนน · 4 ตอน)`
